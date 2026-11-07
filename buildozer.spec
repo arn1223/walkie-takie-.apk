@@ -30,8 +30,14 @@ android.permissions = RECORD_AUDIO,INTERNET,ACCESS_NETWORK_STATE
 # (bool) Automatically accept SDK license
 android.accept_sdk_license = True
 
+# (bool) Skip Android SDK/NDK updates
+android.skip_update = False
+
 # (int) Target Android API, should be as high as possible.
 android.api = 33
+
+# (str) Android NDK version to use
+android.ndk = 25b
 
 # (int) Minimum API your APK / AAB will support.
 android.minapi = 21
