@@ -19,7 +19,7 @@ version = 0.1
 
 # (list) Application requirements
 # comma separated e.g. requirements = sqlite3,kivy
-requirements = python3,kivy==2.3.0,pyjnius
+requirements = python3,kivy,pyjnius
 
 # (str) Supported orientation (one of landscape, sensorLandscape, portrait or all)
 orientation = portrait
@@ -36,14 +36,14 @@ android.skip_update = False
 # (int) Target Android API, should be as high as possible.
 android.api = 33
 
-# (str) Android NDK version to use
-android.ndk = 25b
-
 # (int) Minimum API your APK / AAB will support.
 android.minapi = 21
 
-# (list) The Android archs to build for (arm64-v8a is required for modern 64-bit phones)
-android.archs = arm64-v8a, armeabi-v7a
+# (str) Android NDK version to use
+android.ndk = 25b
+
+# (list) The Android archs to build for (arm64-v8a is for modern 64-bit phones)
+android.archs = arm64-v8a
 
 # (bool) Copy library instead of making a libpymodules.so
 android.copy_libs = 1
