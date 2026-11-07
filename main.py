@@ -146,11 +146,24 @@ class AudioReceiver:
                         stream.write(audio_data)
 
 
+def get_local_ip():
+    """Detects the device's local LAN/Wi-Fi IP address."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = '127.0.0.1'
+    finally:
+        s.close()
+    return ip
+
 class PTTWalkieTalkieApp(App):
     def build(self):
         self.title = "PTT Walkie Talkie"
         self.transmitter = AudioTransmitter()
         self.receiver = AudioReceiver()
+        my_ip = get_local_ip()
 
         # Request Android Runtime Permissions
         if platform == 'android':
@@ -164,12 +177,13 @@ class PTTWalkieTalkieApp(App):
         # Root UI
         root = BoxLayout(orientation='vertical', padding=20, spacing=15)
 
-        # Header
+        # Header with own IP
         header = Label(
-            text="[b]Push-to-Talk Walkie Talkie[/b]",
+            text=f"[b]PTT Walkie Talkie[/b]\n[size=14sp]My IP: {my_ip}[/size]",
             markup=True,
+            halign='center',
             font_size='22sp',
-            size_hint_y=0.15
+            size_hint_y=0.18
         )
         root.add_widget(header)
 
