@@ -27,6 +27,9 @@ orientation = portrait
 # (list) Permissions
 android.permissions = RECORD_AUDIO,INTERNET,ACCESS_NETWORK_STATE
 
+# (bool) Automatically accept SDK license
+android.accept_sdk_license = True
+
 # (int) Target Android API, should be as high as possible.
 android.api = 33
 
