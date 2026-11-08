@@ -58,21 +58,26 @@ class AudioTransmitter:
             recorder.startRecording()
             byte_buf = bytearray(BUFFER_SIZE)
 
+            import array
             try:
                 while self.is_recording:
                     read_bytes = recorder.read(byte_buf, 0, len(byte_buf))
                     if read_bytes > 0:
-                        self.sock.sendto(bytes(byte_buf[:read_bytes]), (self.target_ip, self.target_port))
+                        samples = array.array('h', bytes(byte_buf[:read_bytes]))
+                        boosted = array.array('h', (min(32767, max(-32768, int(s * 2.5))) for s in samples)).tobytes()
+                        self.sock.sendto(boosted, (self.target_ip, self.target_port))
             finally:
                 recorder.stop()
                 recorder.release()
         else:
             # Fallback for desktop testing (Windows / Mac / Linux)
             import sounddevice as sd
+            import numpy as np
             with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype='int16', blocksize=CHUNK_SIZE) as stream:
                 while self.is_recording:
                     data, _ = stream.read(CHUNK_SIZE)
-                    self.sock.sendto(data.tobytes(), (self.target_ip, self.target_port))
+                    boosted = np.clip(data.astype(np.float32) * 2.5, -32768, 32767).astype(np.int16)
+                    self.sock.sendto(boosted.tobytes(), (self.target_ip, self.target_port))
 
 
 class AudioReceiver:
@@ -106,6 +111,7 @@ class AudioReceiver:
             return
 
         if platform == 'android':
+            import array
             from jnius import autoclass
             AudioTrack = autoclass('android.media.AudioTrack')
             AudioManager = autoclass('android.media.AudioManager')
@@ -116,8 +122,9 @@ class AudioReceiver:
                 AudioFormat.CHANNEL_OUT_MONO,
                 AudioFormat.ENCODING_PCM_16BIT
             )
+            # Use STREAM_MUSIC to play through the loud bottom loudspeaker, NOT the quiet call earpiece
             track = AudioTrack(
-                AudioManager.STREAM_VOICE_CALL,
+                AudioManager.STREAM_MUSIC,
                 SAMPLE_RATE,
                 AudioFormat.CHANNEL_OUT_MONO,
                 AudioFormat.ENCODING_PCM_16BIT,
@@ -130,7 +137,10 @@ class AudioReceiver:
                 while self.running:
                     packet, _ = self.sock.recvfrom(BUFFER_SIZE)
                     if packet:
-                        track.write(packet, 0, len(packet))
+                        # 3x Digital Volume Boost
+                        samples = array.array('h', packet)
+                        boosted = array.array('h', (min(32767, max(-32768, int(s * 3.0))) for s in samples)).tobytes()
+                        track.write(boosted, 0, len(boosted))
             finally:
                 track.stop()
                 track.release()
@@ -143,6 +153,8 @@ class AudioReceiver:
                     packet, _ = self.sock.recvfrom(BUFFER_SIZE)
                     if packet:
                         audio_data = np.frombuffer(packet, dtype=np.int16)
+                        boosted = np.clip(audio_data.astype(np.float32) * 3.0, -32768, 32767).astype(np.int16)
+                        stream.write(boosted)
                         stream.write(audio_data)
 
 

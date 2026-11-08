@@ -24,7 +24,9 @@ def send_audio(target_ip: str, target_port: int):
         with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE, blocksize=CHUNK_SIZE) as stream:
             while running:
                 audio_chunk, _ = stream.read(CHUNK_SIZE)
-                sock.sendto(audio_chunk.tobytes(), (target_ip, target_port))
+                # Apply 2.5x microphone boost with int16 clipping
+                boosted = np.clip(audio_chunk.astype(np.float32) * 2.5, -32768, 32767).astype(np.int16)
+                sock.sendto(boosted.tobytes(), (target_ip, target_port))
     except Exception as e:
         if running:
             print(f"[Transmitter Error] {e}")
@@ -44,7 +46,9 @@ def receive_audio(listen_port: int):
                 if not packet:
                     break
                 audio_data = np.frombuffer(packet, dtype=np.int16)
-                stream.write(audio_data)
+                # Apply 3.0x speaker boost with int16 clipping
+                boosted = np.clip(audio_data.astype(np.float32) * 3.0, -32768, 32767).astype(np.int16)
+                stream.write(boosted)
     except Exception as e:
         if running:
             print(f"[Receiver Error] {e}")
