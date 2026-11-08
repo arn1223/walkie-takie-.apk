@@ -42,8 +42,8 @@ android.minapi = 21
 # (str) Android NDK version to use
 android.ndk = 25b
 
-# (list) The Android archs to build for (arm64-v8a is for modern 64-bit phones)
-android.archs = arm64-v8a
+# (list) The Android archs to build for (both 64-bit and 32-bit armv8l/armeabi-v7a)
+android.archs = arm64-v8a, armeabi-v7a
 
 # (bool) Copy library instead of making a libpymodules.so
 android.copy_libs = 1
