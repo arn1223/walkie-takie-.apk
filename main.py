@@ -5,7 +5,6 @@ import string
 import array
 from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.gridlayout import GridLayout
 from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.widget import Widget
@@ -46,6 +45,50 @@ def get_broadcast_targets(port):
     except Exception:
         pass
     return targets
+
+def get_actual_battery():
+    """Reads actual battery percentage from device."""
+    if platform == 'android':
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            Intent = autoclass('android.content.Intent')
+            IntentFilter = autoclass('android.content.IntentFilter')
+            BatteryManager = autoclass('android.os.BatteryManager')
+
+            activity = PythonActivity.mActivity
+            battery_intent = activity.registerReceiver(None, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            level = battery_intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+            scale = battery_intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+            if level >= 0 and scale > 0:
+                return int((level / float(scale)) * 100)
+        except Exception as e:
+            print(f"Battery read error: {e}")
+    return 85  # Fallback default
+
+def get_actual_wifi_bars():
+    """Reads actual Wi-Fi RSSI signal strength from Android hardware."""
+    level = 4
+    if platform == 'android':
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            Context = autoclass('android.content.Context')
+            WifiManager = autoclass('android.net.wifi.WifiManager')
+
+            activity = PythonActivity.mActivity
+            wifi_mgr = activity.getSystemService(Context.WIFI_SERVICE)
+            info = wifi_mgr.getConnectionInfo()
+            rssi = info.getRssi()
+            # Levels: 0 to 4
+            level = WifiManager.calculateSignalLevel(rssi, 5)
+        except Exception as e:
+            print(f"WiFi read error: {e}")
+
+    # Generate visual signal bar meter
+    bars = ["▂____", "▂▄___", "▂▄▅__", "▂▄▅▆_", "▂▄▅▆█"]
+    return bars[max(0, min(4, level))]
+
 
 class GroupTransmitter:
     def __init__(self, device_id):
@@ -115,6 +158,7 @@ class GroupTransmitter:
                         except Exception:
                             pass
 
+
 class GroupReceiver:
     def __init__(self, device_id, on_speaker_detected):
         self.device_id = device_id
@@ -123,6 +167,10 @@ class GroupReceiver:
         self.thread = None
         self.channel = 1
         self.sock = None
+        self.volume_factor = 1.0  # 0.0 (Muted) to 1.0 (Full)
+
+    def set_volume(self, percent):
+        self.volume_factor = max(0.0, min(1.0, percent / 100.0))
 
     def start(self, channel):
         self.channel = channel
@@ -148,6 +196,8 @@ class GroupReceiver:
             print(f"Bind error: {e}")
             return
 
+        gain = self.volume_factor * 3.5
+
         if platform == 'android':
             from jnius import autoclass
             AudioTrack = autoclass('android.media.AudioTrack')
@@ -171,10 +221,15 @@ class GroupReceiver:
                     if packet[4:8] == self.device_id or packet[8] != self.channel:
                         continue
 
+                    # If volume is 0%, don't output audio
+                    if self.volume_factor <= 0.01:
+                        continue
+
                     self.on_speaker_detected(packet[4:8].decode('ascii', errors='ignore'))
                     raw_audio = packet[9:]
                     samples = array.array('h', raw_audio)
-                    boosted = array.array('h', (min(32767, max(-32768, int(s * 3.0))) for s in samples)).tobytes()
+                    current_gain = self.volume_factor * 3.5
+                    boosted = array.array('h', (min(32767, max(-32768, int(s * current_gain))) for s in samples)).tobytes()
                     track.write(boosted, 0, len(boosted))
             finally:
                 track.stop()
@@ -190,10 +245,14 @@ class GroupReceiver:
                     if packet[4:8] == self.device_id or packet[8] != self.channel:
                         continue
 
+                    if self.volume_factor <= 0.01:
+                        continue
+
                     self.on_speaker_detected(packet[4:8].decode('ascii', errors='ignore'))
                     raw_audio = packet[9:]
                     audio_data = np.frombuffer(raw_audio, dtype=np.int16)
-                    boosted = np.clip(audio_data.astype(np.float32) * 3.0, -32768, 32767).astype(np.int16)
+                    current_gain = self.volume_factor * 3.5
+                    boosted = np.clip(audio_data.astype(np.float32) * current_gain, -32768, 32767).astype(np.int16)
                     stream.write(boosted)
 
 
@@ -206,13 +265,12 @@ class SpeakerGrille(Widget):
     def redraw(self, *args):
         self.canvas.clear()
         with self.canvas:
-            Color(0.04, 0.04, 0.05, 1)  # Deep grill slot shadow
+            Color(0.04, 0.04, 0.05, 1)
             rows = 5
             slot_h = 3
             spacing = 7
             start_y = self.y + 10
             for i in range(rows):
-                # Staggered pill slots
                 y = start_y + (i * spacing)
                 w_offset = (i % 2) * 15
                 RoundedRectangle(
@@ -231,10 +289,13 @@ class WalkieTalkieApp(App):
         self.is_private_mode = False
         self.is_powered_on = True
         self.is_hardware_pressed = False
+        self.volume_steps = [25, 50, 75, 100, 0]  # Clickable volume cycle
+        self.vol_index = 3                         # Default 100%
         self.speaker_reset_event = None
 
         self.transmitter = GroupTransmitter(self.device_id)
         self.receiver = GroupReceiver(self.device_id, self.handle_speaker_detected)
+        self.receiver.set_volume(self.volume_steps[self.vol_index])
 
         # Android Multicast & Permissions
         if platform == 'android':
@@ -257,20 +318,19 @@ class WalkieTalkieApp(App):
             except Exception:
                 pass
 
-        # Bind Physical Hardware Keys (Volume Down / Volume Up as PTT Button!)
+        # Physical Hardware Volume Buttons as PTT
         Window.bind(on_key_down=self.on_hardware_key_down, on_key_up=self.on_hardware_key_up)
 
-        # Main Chassis Container
+        # Main Chassis Layout
         root = BoxLayout(orientation='vertical', padding=[20, 15, 20, 10], spacing=12)
 
-        # Background Chassis Drawing
         with root.canvas.before:
             Color(*COLOR_BG)
             self.bg_rect = Rectangle(pos=root.pos, size=root.size)
         root.bind(pos=lambda obj, val: setattr(self.bg_rect, 'pos', val),
                   size=lambda obj, val: setattr(self.bg_rect, 'size', val))
 
-        # 1. Top Status Header (Mini LED indicator)
+        # 1. Top Status Header
         top_bar = BoxLayout(orientation='horizontal', size_hint_y=0.06)
         self.led_label = Label(
             text="● ON AIR", font_size='12sp', bold=True,
@@ -295,24 +355,27 @@ class WalkieTalkieApp(App):
         self.lcd_box.bind(pos=lambda obj, val: setattr(self.lcd_rect, 'pos', val),
                           size=lambda obj, val: setattr(self.lcd_rect, 'size', val))
 
-        # LCD Top: Mode & Battery/Freq
+        # LCD Top: Mode & REAL Battery Level
         lcd_top = BoxLayout(orientation='horizontal', size_hint_y=0.2)
-        self.mode_label = Label(
+        self.mode_btn = Button(
             text="[b]PUBLIC[/b]  Private", markup=True,
-            font_size='13sp', color=COLOR_LCD_TEXT, halign='left'
+            font_size='13sp', color=COLOR_LCD_TEXT,
+            background_color=(0, 0, 0, 0), halign='left', size_hint_x=0.6
         )
-        self.mode_label.bind(size=self.mode_label.setter('text_size'))
-        lcd_top.add_widget(self.mode_label)
+        self.mode_btn.bind(size=self.mode_btn.setter('text_size'))
+        self.mode_btn.bind(on_release=self.toggle_mode)
+        lcd_top.add_widget(self.mode_btn)
 
-        self.freq_label = Label(
-            text="50001 Hz", font_size='12sp',
-            color=COLOR_LCD_TEXT, halign='right'
+        # Actual Battery Percentage Display
+        self.battery_label = Label(
+            text=f"🔋 {get_actual_battery()}%", font_size='13sp', bold=True,
+            color=COLOR_LCD_TEXT, halign='right', size_hint_x=0.4
         )
-        self.freq_label.bind(size=self.freq_label.setter('text_size'))
-        lcd_top.add_widget(self.freq_label)
+        self.battery_label.bind(size=self.battery_label.setter('text_size'))
+        lcd_top.add_widget(self.battery_label)
         self.lcd_box.add_widget(lcd_top)
 
-        # LCD Channel Number & Room Tag
+        # LCD Middle: Channel Number & Hashtag Name
         self.channel_title = Label(
             text=f"CH {self.current_channel} / {self.total_channels}",
             font_size='15sp', bold=True, color=COLOR_LCD_TEXT,
@@ -336,17 +399,30 @@ class WalkieTalkieApp(App):
         self.lcd_status.bind(size=self.lcd_status.setter('text_size'))
         self.lcd_box.add_widget(self.lcd_status)
 
-        # LCD Bottom Info (Volume & Signal Bars)
-        lcd_bottom = BoxLayout(orientation='horizontal', size_hint_y=0.15)
-        vol_label = Label(text="🔊 100%", font_size='12sp', color=COLOR_LCD_TEXT, halign='left')
-        vol_label.bind(size=vol_label.setter('text_size'))
-        lcd_bottom.add_widget(vol_label)
+        # LCD Bottom: CONTROLLABLE Volume Button & REAL Wi-Fi Signal Bars
+        lcd_bottom = BoxLayout(orientation='horizontal', size_hint_y=0.18)
 
-        sig_label = Label(text="📶 ||||||||||", font_size='12sp', color=COLOR_LCD_TEXT, halign='right')
-        sig_label.bind(size=sig_label.setter('text_size'))
-        lcd_bottom.add_widget(sig_label)
+        # Clickable Volume Controller
+        current_vol = self.volume_steps[self.vol_index]
+        vol_str = f"🔊 {current_vol}" if current_vol > 0 else "🔇 MUTE"
+        self.vol_btn = Button(
+            text=f"[b]{vol_str}[/b] (tap)", markup=True,
+            font_size='13sp', color=COLOR_LCD_TEXT,
+            background_color=(0, 0, 0, 0.08), halign='left', size_hint_x=0.45
+        )
+        self.vol_btn.bind(size=self.vol_btn.setter('text_size'))
+        self.vol_btn.bind(on_release=self.cycle_volume)
+        lcd_bottom.add_widget(self.vol_btn)
+
+        # Real Hardware Wi-Fi Signal Bars
+        self.wifi_label = Label(
+            text=f"📶 {get_actual_wifi_bars()}", font_size='14sp', bold=True,
+            color=COLOR_LCD_TEXT, halign='right', size_hint_x=0.55
+        )
+        self.wifi_label.bind(size=self.wifi_label.setter('text_size'))
+        lcd_bottom.add_widget(self.wifi_label)
+
         self.lcd_box.add_widget(lcd_bottom)
-
         root.add_widget(self.lcd_box)
 
         # 3. Four Round Hardware Controls (+, ▲, ▼, ⏻)
@@ -376,7 +452,7 @@ class WalkieTalkieApp(App):
         btn_row.add_widget(Widget(size_hint_x=0.05))
         root.add_widget(btn_row)
 
-        # 4. Large Capsule PTT Button with Neon Glow Outline
+        # 4. Large Capsule PTT Button
         ptt_container = BoxLayout(size_hint_y=0.22, padding=[10, 5, 10, 5])
         self.ptt_btn = Button(
             text="◯   HOLD TO TALK   ◯\n[size=12sp](Or Hold Volume-Down Button)[/size]",
@@ -389,7 +465,6 @@ class WalkieTalkieApp(App):
         self.ptt_btn.bind(on_press=self.on_ptt_press)
         self.ptt_btn.bind(on_release=self.on_ptt_release)
 
-        # Draw glowing rounded pill border
         with self.ptt_btn.canvas.before:
             self.ptt_border_color = Color(*COLOR_LCD_GREEN)
             self.ptt_border = Line(rounded_rectangle=[self.ptt_btn.x, self.ptt_btn.y, self.ptt_btn.width, self.ptt_btn.height, 22], width=2.5)
@@ -402,6 +477,9 @@ class WalkieTalkieApp(App):
         self.grille = SpeakerGrille(size_hint_y=0.12)
         root.add_widget(self.grille)
 
+        # Auto-update Battery and Wi-Fi every 4 seconds
+        Clock.schedule_interval(self.refresh_telemetry, 4.0)
+
         # Start background receiver on Channel 1
         self.receiver.start(self.current_channel)
 
@@ -410,20 +488,37 @@ class WalkieTalkieApp(App):
     def _update_ptt_border(self, instance, *args):
         self.ptt_border.rounded_rectangle = [instance.x + 2, instance.y + 2, instance.width - 4, instance.height - 4, 22]
 
-    # Mode Toggle (Public Neon Green <-> Private Amber Orange)
+    # Live Battery & Wi-Fi Refresh
+    def refresh_telemetry(self, dt):
+        self.battery_label.text = f"🔋 {get_actual_battery()}%"
+        self.wifi_label.text = f"📶 {get_actual_wifi_bars()}"
+
+    # Controllable Volume Toggle
+    def cycle_volume(self, *args):
+        self.vol_index = (self.vol_index + 1) % len(self.volume_steps)
+        vol = self.volume_steps[self.vol_index]
+        self.receiver.set_volume(vol)
+        if vol > 0:
+            self.vol_btn.text = f"[b]🔊 {vol}[/b] (tap)"
+            self.lcd_status.text = f"Volume set to {vol}%"
+        else:
+            self.vol_btn.text = "[b]🔇 MUTE[/b] (tap)"
+            self.lcd_status.text = "Audio Muted"
+
+    # Theme Toggle (Neon Green <-> Warm Amber)
     def toggle_mode(self, *args):
         self.is_private_mode = not self.is_private_mode
         if self.is_private_mode:
             self.lcd_color.rgba = COLOR_LCD_ORANGE
             self.ptt_border_color.rgba = COLOR_LCD_ORANGE
             self.led_label.color = COLOR_LCD_ORANGE
-            self.mode_label.text = "Public  [b]PRIVATE[/b]"
-            self.hashtag_label.text = "#MyPrivate"
+            self.mode_btn.text = "Public  [b]PRIVATE[/b]"
+            self.hashtag_label.text = "#MyFamily"
         else:
             self.lcd_color.rgba = COLOR_LCD_GREEN
             self.ptt_border_color.rgba = COLOR_LCD_GREEN
             self.led_label.color = COLOR_LCD_GREEN
-            self.mode_label.text = "[b]PUBLIC[/b]  Private"
+            self.mode_btn.text = "[b]PUBLIC[/b]  Private"
             self.hashtag_label.text = "#MainSquad"
 
     def channel_up(self, *args):
@@ -444,7 +539,6 @@ class WalkieTalkieApp(App):
         if self.is_powered_on:
             self.receiver.start(self.current_channel)
         self.channel_title.text = f"CH {self.current_channel} / {self.total_channels}"
-        self.freq_label.text = f"{BASE_PORT + self.current_channel} Hz"
         self.lcd_status.text = f"Connected to Channel {self.current_channel}"
 
     def toggle_power(self, *args):
@@ -458,14 +552,12 @@ class WalkieTalkieApp(App):
             self.lcd_status.text = "Muted / Standby"
             self.led_label.text = "○ OFF"
 
-    # Hardware Volume Buttons as Physical PTT
     def on_hardware_key_down(self, window, keycode, scancode, codepoint, modifiers):
-        # Keycode 25: Android Volume Down, Keycode 24: Volume Up, Keycode 32: Desktop Spacebar
         if keycode in [25, 24, 32]:
             if not self.is_hardware_pressed:
                 self.is_hardware_pressed = True
                 self.on_ptt_press()
-            return True  # Consume key event so OS volume popup doesn't appear
+            return True
         return False
 
     def on_hardware_key_up(self, window, keycode, scancode):
