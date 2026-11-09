@@ -25,7 +25,7 @@ requirements = python3,kivy,pyjnius
 orientation = portrait
 
 # (list) Permissions
-android.permissions = RECORD_AUDIO,INTERNET,ACCESS_NETWORK_STATE
+android.permissions = RECORD_AUDIO,INTERNET,ACCESS_NETWORK_STATE,CHANGE_WIFI_MULTICAST_STATE,ACCESS_WIFI_STATE
 
 # (bool) Automatically accept SDK license
 android.accept_sdk_license = True
