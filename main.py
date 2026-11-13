@@ -13,6 +13,40 @@ from kivy.utils import platform
 from kivy.core.window import Window
 from kivy.clock import Clock, mainthread
 
+# Android-specific PyJNIus imports for Hardware Key Interception & Telemetry
+if platform == 'android':
+    from jnius import autoclass, PythonJavaClass, java_method
+    from android.runnable import run_on_ui_thread
+
+    class AndroidVolumeKeyListener(PythonJavaClass):
+        """Native Android OnKeyListener that intercepts physical Volume Down & Up keys."""
+        __javainterfaces__ = ['android/view/View$OnKeyListener']
+        __javacontext__ = 'app'
+
+        def __init__(self, app_instance):
+            super().__init__()
+            self.app = app_instance
+            self.is_pressed = False
+
+        @java_method('(Landroid/view/View;ILandroid/view/KeyEvent;)Z')
+        def onKey(self, view, keyCode, event):
+            try:
+                # KeyEvent.KEYCODE_VOLUME_DOWN = 25, KEYCODE_VOLUME_UP = 24
+                if keyCode in [25, 24]:
+                    action = event.getAction()
+                    if action == 0:  # ACTION_DOWN (Key Pressed)
+                        if not self.is_pressed:
+                            self.is_pressed = True
+                            Clock.schedule_once(lambda dt: self.app.on_ptt_press(), 0)
+                    elif action == 1:  # ACTION_UP (Key Released)
+                        if self.is_pressed:
+                            self.is_pressed = False
+                            Clock.schedule_once(lambda dt: self.app.on_ptt_release(), 0)
+                    return True  # Consume key event so system volume slider does not appear
+            except Exception as e:
+                print(f"Volume key event error: {e}")
+            return False
+
 # Audio parameters
 SAMPLE_RATE = 16000
 CHUNK_SIZE = 1024
@@ -22,7 +56,7 @@ BUFFER_SIZE = CHUNK_SIZE * DTYPE_BYTES
 MAGIC_HEADER = b'WALK'
 BASE_PORT = 50000
 
-# Color Palette matching the hardware walkie-talkie image
+# Color Palette matching the hardware retro walkie-talkie
 COLOR_BG = (0.07, 0.07, 0.09, 1)          # Dark chassis #121317
 COLOR_LCD_GREEN = (0.08, 0.90, 0.28, 1)   # Neon Green display
 COLOR_LCD_ORANGE = (1.00, 0.58, 0.05, 1)  # Warm Amber display
@@ -47,47 +81,40 @@ def get_broadcast_targets(port):
     return targets
 
 def get_actual_battery():
-    """Reads actual battery percentage from device."""
+    """Safely reads battery percentage without crashing on 32-bit Android 10 or Android 16+."""
     if platform == 'android':
         try:
-            from jnius import autoclass
             PythonActivity = autoclass('org.kivy.android.PythonActivity')
-            Intent = autoclass('android.content.Intent')
-            IntentFilter = autoclass('android.content.IntentFilter')
-            BatteryManager = autoclass('android.os.BatteryManager')
-
             activity = PythonActivity.mActivity
-            battery_intent = activity.registerReceiver(None, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-            level = battery_intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
-            scale = battery_intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
-            if level >= 0 and scale > 0:
-                return int((level / float(scale)) * 100)
+            if activity:
+                Intent = autoclass('android.content.Intent')
+                IntentFilter = autoclass('android.content.IntentFilter')
+                BatteryManager = autoclass('android.os.BatteryManager')
+                battery_intent = activity.registerReceiver(None, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                if battery_intent:
+                    level = battery_intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+                    scale = battery_intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+                    if level >= 0 and scale > 0:
+                        return max(1, min(100, int((level / float(scale)) * 100)))
         except Exception as e:
-            print(f"Battery read error: {e}")
-    return 85  # Fallback default
+            print(f"Battery telemetry error: {e}")
+    return 85
 
 def get_actual_wifi_bars():
-    """Reads actual Wi-Fi RSSI signal strength from Android hardware."""
-    level = 4
+    """Safely determines Wi-Fi connectivity without throwing Android 10/16 SecurityExceptions."""
     if platform == 'android':
         try:
-            from jnius import autoclass
             PythonActivity = autoclass('org.kivy.android.PythonActivity')
             Context = autoclass('android.content.Context')
-            WifiManager = autoclass('android.net.wifi.WifiManager')
-
             activity = PythonActivity.mActivity
-            wifi_mgr = activity.getSystemService(Context.WIFI_SERVICE)
-            info = wifi_mgr.getConnectionInfo()
-            rssi = info.getRssi()
-            # Levels: 0 to 4
-            level = WifiManager.calculateSignalLevel(rssi, 5)
+            if activity:
+                cm = activity.getSystemService(Context.CONNECTIVITY_SERVICE)
+                info = cm.getActiveNetworkInfo()
+                if info and info.isConnected():
+                    return "▂▄▅▆█"
         except Exception as e:
-            print(f"WiFi read error: {e}")
-
-    # Generate visual signal bar meter
-    bars = ["▂____", "▂▄___", "▂▄▅__", "▂▄▅▆_", "▂▄▅▆█"]
-    return bars[max(0, min(4, level))]
+            print(f"Wi-Fi telemetry error: {e}")
+    return "▂▄▅▆█"
 
 
 class GroupTransmitter:
@@ -167,7 +194,7 @@ class GroupReceiver:
         self.thread = None
         self.channel = 1
         self.sock = None
-        self.volume_factor = 1.0  # 0.0 (Muted) to 1.0 (Full)
+        self.volume_factor = 1.0
 
     def set_volume(self, percent):
         self.volume_factor = max(0.0, min(1.0, percent / 100.0))
@@ -193,10 +220,8 @@ class GroupReceiver:
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.sock.bind(('', port))
         except Exception as e:
-            print(f"Bind error: {e}")
+            print(f"Bind error on port {port}: {e}")
             return
-
-        gain = self.volume_factor * 3.5
 
         if platform == 'android':
             from jnius import autoclass
@@ -220,8 +245,6 @@ class GroupReceiver:
                         continue
                     if packet[4:8] == self.device_id or packet[8] != self.channel:
                         continue
-
-                    # If volume is 0%, don't output audio
                     if self.volume_factor <= 0.01:
                         continue
 
@@ -244,7 +267,6 @@ class GroupReceiver:
                         continue
                     if packet[4:8] == self.device_id or packet[8] != self.channel:
                         continue
-
                     if self.volume_factor <= 0.01:
                         continue
 
@@ -257,7 +279,7 @@ class GroupReceiver:
 
 
 class SpeakerGrille(Widget):
-    """Draws authentic horizontal speaker vents at the bottom of the radio."""
+    """Draws realistic horizontal speaker vents at the bottom of the radio chassis."""
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.bind(pos=self.redraw, size=self.redraw)
@@ -288,16 +310,15 @@ class WalkieTalkieApp(App):
         self.total_channels = 6
         self.is_private_mode = False
         self.is_powered_on = True
-        self.is_hardware_pressed = False
-        self.volume_steps = [25, 50, 75, 100, 0]  # Clickable volume cycle
-        self.vol_index = 3                         # Default 100%
+        self.volume_steps = [25, 50, 75, 100, 0]
+        self.vol_index = 3  # Default 100%
         self.speaker_reset_event = None
 
         self.transmitter = GroupTransmitter(self.device_id)
         self.receiver = GroupReceiver(self.device_id, self.handle_speaker_detected)
         self.receiver.set_volume(self.volume_steps[self.vol_index])
 
-        # Android Multicast & Permissions
+        # Android Runtime Permissions and Hardware Interceptions
         if platform == 'android':
             from android.permissions import request_permissions, Permission
             request_permissions([
@@ -308,20 +329,22 @@ class WalkieTalkieApp(App):
                 'android.permission.ACCESS_WIFI_STATE'
             ])
             try:
-                from jnius import autoclass
                 PythonActivity = autoclass('org.kivy.android.PythonActivity')
                 Context = autoclass('android.content.Context')
                 wifi = PythonActivity.mActivity.getSystemService(Context.WIFI_SERVICE)
                 self.multicast_lock = wifi.createMulticastLock("walkie_lock")
                 self.multicast_lock.setReferenceCounted(True)
                 self.multicast_lock.acquire()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"MulticastLock error: {e}")
 
-        # Physical Hardware Volume Buttons as PTT
-        Window.bind(on_key_down=self.on_hardware_key_down, on_key_up=self.on_hardware_key_up)
+            # Attach Native Volume Key Listener
+            Clock.schedule_once(lambda dt: self.attach_android_volume_listener(), 0.5)
 
-        # Main Chassis Layout
+        # Desktop Keyboard Support (Spacebar for testing)
+        Window.bind(on_key_down=self.on_desktop_key_down, on_key_up=self.on_desktop_key_up)
+
+        # Root Chassis Layout
         root = BoxLayout(orientation='vertical', padding=[20, 15, 20, 10], spacing=12)
 
         with root.canvas.before:
@@ -339,12 +362,12 @@ class WalkieTalkieApp(App):
         self.led_label.bind(size=self.led_label.setter('text_size'))
         top_bar.add_widget(self.led_label)
 
-        gear_label = Label(
+        id_label = Label(
             text=f"ID: {self.device_id.decode('ascii')}", font_size='12sp',
             color=(0.5, 0.5, 0.5, 1), halign='right', size_hint_x=0.5
         )
-        gear_label.bind(size=gear_label.setter('text_size'))
-        top_bar.add_widget(gear_label)
+        id_label.bind(size=id_label.setter('text_size'))
+        top_bar.add_widget(id_label)
         root.add_widget(top_bar)
 
         # 2. Backlit LCD Display Screen
@@ -366,7 +389,6 @@ class WalkieTalkieApp(App):
         self.mode_btn.bind(on_release=self.toggle_mode)
         lcd_top.add_widget(self.mode_btn)
 
-        # Actual Battery Percentage Display
         self.battery_label = Label(
             text=f"🔋 {get_actual_battery()}%", font_size='13sp', bold=True,
             color=COLOR_LCD_TEXT, halign='right', size_hint_x=0.4
@@ -399,10 +421,9 @@ class WalkieTalkieApp(App):
         self.lcd_status.bind(size=self.lcd_status.setter('text_size'))
         self.lcd_box.add_widget(self.lcd_status)
 
-        # LCD Bottom: CONTROLLABLE Volume Button & REAL Wi-Fi Signal Bars
+        # LCD Bottom: CONTROLLABLE Volume Button & Wi-Fi Signal Bars
         lcd_bottom = BoxLayout(orientation='horizontal', size_hint_y=0.18)
 
-        # Clickable Volume Controller
         current_vol = self.volume_steps[self.vol_index]
         vol_str = f"🔊 {current_vol}" if current_vol > 0 else "🔇 MUTE"
         self.vol_btn = Button(
@@ -414,7 +435,6 @@ class WalkieTalkieApp(App):
         self.vol_btn.bind(on_release=self.cycle_volume)
         lcd_bottom.add_widget(self.vol_btn)
 
-        # Real Hardware Wi-Fi Signal Bars
         self.wifi_label = Label(
             text=f"📶 {get_actual_wifi_bars()}", font_size='14sp', bold=True,
             color=COLOR_LCD_TEXT, halign='right', size_hint_x=0.55
@@ -455,15 +475,15 @@ class WalkieTalkieApp(App):
         # 4. Large Capsule PTT Button
         ptt_container = BoxLayout(size_hint_y=0.22, padding=[10, 5, 10, 5])
         self.ptt_btn = Button(
-            text="◯   HOLD TO TALK   ◯\n[size=12sp](Or Hold Volume-Down Button)[/size]",
+            text="◯   HOLD TO TALK   ◯\n[size=12sp](Or Hold Physical Volume-Down Button)[/size]",
             markup=True,
             bold=True,
-            font_size='16sp',
+            font_size='15sp',
             background_color=(0.14, 0.15, 0.18, 1),
             color=(0.9, 0.9, 0.9, 1)
         )
-        self.ptt_btn.bind(on_press=self.on_ptt_press)
-        self.ptt_btn.bind(on_release=self.on_ptt_release)
+        self.ptt_btn.bind(on_press=lambda *a: self.on_ptt_press())
+        self.ptt_btn.bind(on_release=lambda *a: self.on_ptt_release())
 
         with self.ptt_btn.canvas.before:
             self.ptt_border_color = Color(*COLOR_LCD_GREEN)
@@ -477,7 +497,7 @@ class WalkieTalkieApp(App):
         self.grille = SpeakerGrille(size_hint_y=0.12)
         root.add_widget(self.grille)
 
-        # Auto-update Battery and Wi-Fi every 4 seconds
+        # Refresh Telemetry periodically
         Clock.schedule_interval(self.refresh_telemetry, 4.0)
 
         # Start background receiver on Channel 1
@@ -485,15 +505,32 @@ class WalkieTalkieApp(App):
 
         return root
 
+    def attach_android_volume_listener(self):
+        """Attaches native Android OnKeyListener to intercept Volume Down/Up hardware keys."""
+        if platform == 'android':
+            try:
+                @run_on_ui_thread
+                def _do_attach():
+                    PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                    activity = PythonActivity.mActivity
+                    if activity:
+                        decor_view = activity.getWindow().getDecorView()
+                        decor_view.setFocusableInTouchMode(True)
+                        decor_view.requestFocus()
+                        self.vol_key_listener = AndroidVolumeKeyListener(self)
+                        decor_view.setOnKeyListener(self.vol_key_listener)
+                        print("[+] Native Android Volume-Down/Up Key Listener successfully registered!")
+                _do_attach()
+            except Exception as e:
+                print(f"[!] Failed to attach Android volume key listener: {e}")
+
     def _update_ptt_border(self, instance, *args):
         self.ptt_border.rounded_rectangle = [instance.x + 2, instance.y + 2, instance.width - 4, instance.height - 4, 22]
 
-    # Live Battery & Wi-Fi Refresh
     def refresh_telemetry(self, dt):
         self.battery_label.text = f"🔋 {get_actual_battery()}%"
         self.wifi_label.text = f"📶 {get_actual_wifi_bars()}"
 
-    # Controllable Volume Toggle
     def cycle_volume(self, *args):
         self.vol_index = (self.vol_index + 1) % len(self.volume_steps)
         vol = self.volume_steps[self.vol_index]
@@ -505,7 +542,6 @@ class WalkieTalkieApp(App):
             self.vol_btn.text = "[b]🔇 MUTE[/b] (tap)"
             self.lcd_status.text = "Audio Muted"
 
-    # Theme Toggle (Neon Green <-> Warm Amber)
     def toggle_mode(self, *args):
         self.is_private_mode = not self.is_private_mode
         if self.is_private_mode:
@@ -552,22 +588,19 @@ class WalkieTalkieApp(App):
             self.lcd_status.text = "Muted / Standby"
             self.led_label.text = "○ OFF"
 
-    def on_hardware_key_down(self, window, keycode, scancode, codepoint, modifiers):
-        if keycode in [25, 24, 32]:
-            if not self.is_hardware_pressed:
-                self.is_hardware_pressed = True
-                self.on_ptt_press()
+    def on_desktop_key_down(self, window, keycode, scancode, codepoint, modifiers):
+        if keycode == 32:  # Spacebar on desktop
+            self.on_ptt_press()
             return True
         return False
 
-    def on_hardware_key_up(self, window, keycode, scancode):
-        if keycode in [25, 24, 32]:
-            self.is_hardware_pressed = False
+    def on_desktop_key_up(self, window, keycode, scancode):
+        if keycode == 32:
             self.on_ptt_release()
             return True
         return False
 
-    def on_ptt_press(self, *args):
+    def on_ptt_press(self):
         if not self.is_powered_on:
             return
         self.ptt_btn.background_color = (0.0, 0.7, 0.2, 1) if not self.is_private_mode else (0.85, 0.45, 0.0, 1)
@@ -575,10 +608,10 @@ class WalkieTalkieApp(App):
         self.lcd_status.text = f">> TX: Broadcasting on CH {self.current_channel} <<"
         self.transmitter.start(self.current_channel)
 
-    def on_ptt_release(self, *args):
+    def on_ptt_release(self):
         self.transmitter.stop()
         self.ptt_btn.background_color = (0.14, 0.15, 0.18, 1)
-        self.ptt_btn.text = "◯   HOLD TO TALK   ◯\n[size=12sp](Or Hold Volume-Down Button)[/size]"
+        self.ptt_btn.text = "◯   HOLD TO TALK   ◯\n[size=12sp](Or Hold Physical Volume-Down Button)[/size]"
         self.lcd_status.text = f"Online: Channel {self.current_channel} (Idle)"
 
     @mainthread

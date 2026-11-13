@@ -25,7 +25,7 @@ requirements = python3,kivy,pyjnius
 orientation = portrait
 
 # (list) Permissions
-android.permissions = RECORD_AUDIO,INTERNET,ACCESS_NETWORK_STATE,CHANGE_WIFI_MULTICAST_STATE,ACCESS_WIFI_STATE
+android.permissions = RECORD_AUDIO,INTERNET,ACCESS_NETWORK_STATE,CHANGE_WIFI_MULTICAST_STATE,ACCESS_WIFI_STATE,ACCESS_COARSE_LOCATION
 
 # (bool) Automatically accept SDK license
 android.accept_sdk_license = True
@@ -33,17 +33,17 @@ android.accept_sdk_license = True
 # (bool) Skip Android SDK/NDK updates
 android.skip_update = False
 
-# (int) Target Android API, should be as high as possible.
-android.api = 33
+# (int) Target Android API: Android 14/15/16 ready
+android.api = 34
 
-# (int) Minimum API your APK / AAB will support.
+# (int) Minimum API your APK will support (Android 5.0 through Android 16+)
 android.minapi = 21
 
 # (str) Android NDK version to use
 android.ndk = 25b
 
-# (list) The Android archs to build for: 32-bit ARM for your armv8l Android 10 phone
-android.archs = armeabi-v7a
+# (list) Dual Architecture: 32-bit (armeabi-v7a) + 64-bit (arm64-v8a)
+android.archs = arm64-v8a, armeabi-v7a
 
 # (bool) Copy library instead of making a libpymodules.so
 android.copy_libs = 1
