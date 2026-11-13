@@ -58,8 +58,8 @@ BUFFER_SIZE = CHUNK_SIZE * DTYPE_BYTES
 MAGIC_HEADER = b'WALK'
 BASE_PORT = 50000
 
-# Default relay server URL (update after Render deployment)
-DEFAULT_RELAY_URL = ""
+# Default relay server URL (Render.com)
+DEFAULT_RELAY_URL = "wss://walkie-takie-relay.onrender.com/ws"
 
 # Color Palette matching the hardware retro walkie-talkie
 COLOR_BG = (0.07, 0.07, 0.09, 1)          # Dark chassis #121317
@@ -931,8 +931,11 @@ class WalkieTalkieApp(App):
         # Refresh Telemetry periodically
         Clock.schedule_interval(self.refresh_telemetry, 4.0)
 
-        # Start background receiver on Channel 1 (LAN mode by default)
-        self.lan_receiver.start(self.current_channel)
+        # Auto-connect to Cloud relay if configured, otherwise fallback to LAN
+        if self.relay_url:
+            Clock.schedule_once(lambda dt: self._connect_cloud(self.relay_url), 0.5)
+        else:
+            self.lan_receiver.start(self.current_channel)
 
         return root
 

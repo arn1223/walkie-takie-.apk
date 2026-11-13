@@ -377,20 +377,21 @@ def main():
 
     # Mode selection
     print("\nSelect mode:")
-    print("  1. LAN Mode (local network, zero-config)")
-    print("  2. Cloud Mode (Render relay server, internet)")
-    mode_input = input("Enter mode [1/2] (Default 1): ").strip()
-    use_cloud = mode_input == "2"
+    print("  1. LAN Mode (local Wi-Fi, zero-config)")
+    print("  2. Cloud Mode (Render relay, global internet)")
+    mode_input = input("Enter mode [1/2] (Default 2 - Cloud): ").strip()
+    use_cloud = mode_input != "1"
 
     print("\nSelect a Channel (1 to 6) to connect with your Android phones:")
     ch_input = input("Enter Channel [1-6] (Default 1): ").strip()
     channel = int(ch_input) if ch_input in ['1', '2', '3', '4', '5', '6'] else 1
 
     if use_cloud:
-        relay_url = input("Enter relay server URL (e.g. wss://your-app.onrender.com/ws): ").strip()
+        default_url = "wss://walkie-takie-relay.onrender.com/ws"
+        url_prompt = f"Enter relay URL (Press Enter for default: {default_url}): "
+        relay_url = input(url_prompt).strip()
         if not relay_url:
-            print("[!] No URL provided. Falling back to LAN mode.")
-            use_cloud = False
+            relay_url = default_url
         else:
             # Normalize URL
             if not relay_url.startswith("ws://") and not relay_url.startswith("wss://"):
@@ -403,6 +404,8 @@ def main():
             if not relay_url.endswith("/ws"):
                 if relay_url.endswith("/"):
                     relay_url += "ws"
+                else:
+                    relay_url += "/ws"
                 else:
                     relay_url += "/ws"
 
