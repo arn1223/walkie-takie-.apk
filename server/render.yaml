@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: walkie-talkie-relay
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python relay.py
+    envVars:
+      - key: PORT
+        generateValue: false
+        value: "10000"
+    plan: free
+    rootDir: server
