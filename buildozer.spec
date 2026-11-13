@@ -33,8 +33,8 @@ android.accept_sdk_license = True
 # (bool) Skip Android SDK/NDK updates
 android.skip_update = False
 
-# (int) Target Android API: Android 14/15/16 ready
-android.api = 34
+# (int) Target Android API: Stable with NDK 25b, fully supported from Android 5 to Android 16+
+android.api = 33
 
 # (int) Minimum API your APK will support (Android 5.0 through Android 16+)
 android.minapi = 21
@@ -42,8 +42,8 @@ android.minapi = 21
 # (str) Android NDK version to use
 android.ndk = 25b
 
-# (list) Dual Architecture: 32-bit (armeabi-v7a) + 64-bit (arm64-v8a)
-android.archs = arm64-v8a, armeabi-v7a
+# (list) Architecture to build
+android.archs = armeabi-v7a
 
 # (bool) Copy library instead of making a libpymodules.so
 android.copy_libs = 1
