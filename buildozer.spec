@@ -19,7 +19,7 @@ version = 0.1
 
 # (list) Application requirements
 # comma separated e.g. requirements = sqlite3,kivy
-requirements = python3,kivy==2.2.1,pyjnius
+requirements = python3==3.11.1,hostpython3==3.11.1,kivy==2.2.1,pyjnius
 
 # (bool) Enable AndroidX support. Required when targeting Android API 33+
 android.enable_androidx = True
