@@ -406,8 +406,6 @@ def main():
                     relay_url += "ws"
                 else:
                     relay_url += "/ws"
-                else:
-                    relay_url += "/ws"
 
     if use_cloud:
         print("-" * 60)
